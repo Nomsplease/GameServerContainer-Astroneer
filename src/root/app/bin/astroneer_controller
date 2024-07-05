@@ -1,0 +1,131 @@
+#!/bin/bash
+
+#Heavily based on: https://github.com/alatnet/astroneer-docker-server/blob/master/usr/bin/astroneer_controller
+
+source /app/lib/notifier.sh
+
+APPID=728470
+
+function get_available_build() {
+    # clear appcache (to avoid reading infos from cache)
+    rm -rf /root/Steam/appcache
+
+    # get available build id and return it
+    local _build_id=$(/usr/games/steamcmd +login anonymous +app_info_update 1 +app_info_print $APPID +quit | \
+                    grep -EA 1000 "^\s+\"branches\"$" | grep -EA 5 "^\s+\"public\"$" | \
+                    grep -m 1 -EB 10 "^\s+}" | grep -E "^\s+\"buildid\"\s+" | \
+                    tr '[:blank:]"' ' ' | awk '{print $2}')
+
+    echo "$_build_id"
+}
+
+function get_installed_build() {
+    # get currently installed build id and return it
+    local _build_id=$(cat /server/steamapps/appmanifest_$APPID.acf | \
+              grep -E "^\s+\"buildid\"" |  tr '[:blank:]"' ' ' | awk '{print $2}')
+
+    echo "$_build_id"
+}
+
+function check_enryption_disabled() {
+    # Disable Encryption as Wine doenst support it
+    if ! $(crudini --get /server/Astro/Saved/Config/WindowsServer/Engine.ini "SystemSettings" "net.AllowEncryption"); then
+        crudini --set /server/Astro/Saved/Config/WindowsServer/Engine.ini "SystemSettings" "net.AllowEncryption" False
+    fi
+}
+
+function check_server_running() {
+    if ps axg | grep -F 'AstroServer' | grep -v -F 'grep' > /dev/null; then
+        echo 0
+    else
+        echo 1
+    fi
+}
+
+function start_server() {
+    # check if server is already running to avoid running it more than one time
+    if [[ $(check_server_running) == 0 ]];then
+        notifier_error "The server is already running."
+        return
+    else
+        supervisorctl status astroneerServer | grep RUNNING > /dev/null
+        [[ $? != 0 ]] && supervisorctl start astroneerServer
+    fi
+}
+
+function stop_server() {
+    # stop the server
+    supervisorctl status astroneerServer | grep RUNNING > /dev/null
+    [[ $? == 0 ]] && supervisorctl stop astroneerServer
+
+    # wait until the server process is gone
+    while ps axg | grep -F 'AstroServer' | grep -v -F 'grep' > /dev/null; do
+      notifier_error "Seems I can't stop the server. Help me!"
+      sleep 5
+    done
+}
+
+function update_server() {
+    # update server
+    supervisorctl status astroneerUpdate | grep RUNNING > /dev/null
+    [[ $? != 0 ]] && supervisorctl start astroneerUpdate
+}
+
+
+function do_update() {
+    # This function take either 0 for update with sleep, or 1 for update without sleep and backup
+    # stop, backup, update and start again the server
+        stop_server
+        update_server
+
+    # wait till update is finished
+    while $(supervisorctl status astroneerUpdate | grep RUNNING > /dev/null); do
+        sleep 1
+    done
+
+    # check if server is up to date
+    local _ab=$(get_available_build)
+    local _ib=$(get_installed_build)
+
+    if [[ $_ab != "$_ib" ]];then
+        echo "Warning: Update seems to have failed. Installed build ($_ib) does not match available build ($_ab)."
+    else
+        echo "Info: Updated to build ($_ib) successfully."
+    fi
+
+    start_server
+}
+
+start_master_loop() {
+    notifier_info "Astroneer Instance: $(hostname)"
+
+    while true; do
+        # if initial install/update fails try again
+        if [ ! -f "/server/AstroServer.exe" ] ; then
+            notifier_warn "No binaries found. Doing a fresh installation"
+            do_update
+            notifier_debug "Initial installation finished."
+        fi
+        #Check our config files exist, if they dont generate them with a server start
+        if [ ! -e "/astroneer/Astro/Saved/Config/WindowsServer/AstroServerSettings.ini" ]; then
+            start_server
+            stop_server
+            check_enryption_disabled
+        fi
+
+        # check if an update is needed
+        ab=$(get_available_build)
+        ib=$(get_installed_build)
+
+        if [[ $ab != "$ib" ]];then
+            notifier_info "New build available. Updating $ib -> $ab"
+            do_update
+        fi
+        
+        check_enryption_disabled
+        start_server
+        sleep 300
+    done
+}
+
+start_master_loop
