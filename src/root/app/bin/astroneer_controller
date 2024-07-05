@@ -30,7 +30,7 @@ function get_installed_build() {
 function check_enryption_disabled() {
     # Disable Encryption as Wine doenst support it
     if ! $(crudini --get /server/Astro/Saved/Config/WindowsServer/Engine.ini "SystemSettings" "net.AllowEncryption"); then
-        crudini --set /server/Astro/Saved/Config/WindowsServer/Engine.ini "SystemSettings" "net.AllowEncryption" False
+        crudini --set /server/Astro/Saved/Config/WindowsServer/Engine.ini "SystemSettings" "net.AllowEncryption" "False"
     fi
 }
 
